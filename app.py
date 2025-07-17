@@ -7,6 +7,8 @@ import base64
 from io import BytesIO
 import plotly.express as px
 import plotly.graph_objects as go
+from PIL import Image
+import io
 
 # Page configuration
 st.set_page_config(
@@ -211,6 +213,27 @@ st.markdown("""
     .fade-in {
         animation: fadeIn 0.5s ease-out;
     }
+    
+    /* Rotation button styles */
+    .rotation-controls {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+    }
+    
+    .rotation-btn {
+        background: #667eea;
+        color: white;
+        border: none;
+        padding: 0.3rem 0.8rem;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 0.9rem;
+    }
+    
+    .rotation-btn:hover {
+        background: #764ba2;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -261,6 +284,22 @@ def check_login(username, password):
 def file_to_base64(file):
     return base64.b64encode(file.getvalue()).decode()
 
+def base64_to_image(base64_string):
+    """Convert base64 string to PIL Image"""
+    img_data = base64.b64decode(base64_string)
+    img = Image.open(io.BytesIO(img_data))
+    return img
+
+def rotate_image(img, degrees):
+    """Rotate PIL image by specified degrees"""
+    return img.rotate(-degrees, expand=True)
+
+def image_to_base64(img):
+    """Convert PIL Image to base64 string"""
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode()
+
 def create_metric_card(label, value, icon):
     return f"""
     <div class="metric-card">
@@ -274,6 +313,12 @@ def create_metric_card(label, value, icon):
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
+
+if "rotation_states" not in st.session_state:
+    st.session_state.rotation_states = {}
+
+if "batch_lectures" not in st.session_state:
+    st.session_state.batch_lectures = []
 
 # Sidebar
 with st.sidebar:
@@ -470,8 +515,8 @@ with tab1:
                 # Description
                 if lecture.get("description"):
                     st.markdown(f"**Description:** {lecture['description']}")
-		
-                                # Tags
+                
+                # Tags
                 if lecture.get("tags"):
                     tag_html = " ".join([f'<span style="background: #e9ecef; padding: 0.2rem 0.6rem; border-radius: 15px; margin: 0.2rem; display: inline-block; font-size: 0.8rem;">#{tag}</span>' for tag in lecture["tags"]])
                     st.markdown(f"<div style='margin: 0.5rem 0;'>{tag_html}</div>", unsafe_allow_html=True)
@@ -497,8 +542,39 @@ with tab1:
                                         key=f"pdf_{lecture['id']}_{file_data['name']}"
                                     )
                                 else:
-                                    img_bytes = base64.b64decode(file_data["content"])
-                                    st.image(img_bytes, caption=f"🖼️ {file_data['name']}", use_column_width=True)
+                                    # Image with rotation
+                                    img_key = f"{lecture['id']}_{file_data['name']}"
+                                    
+                                    # Initialize rotation state if not exists
+                                    if img_key not in st.session_state.rotation_states:
+                                        st.session_state.rotation_states[img_key] = 0
+                                    
+                                    # Get current rotation
+                                    current_rotation = st.session_state.rotation_states[img_key]
+                                    
+                                    # Load and rotate image
+                                    img = base64_to_image(file_data["content"])
+                                    if current_rotation != 0:
+                                        img = rotate_image(img, current_rotation)
+                                    
+                                    # Display image
+                                    st.image(img, caption=f"🖼️ {file_data['name']}", use_column_width=True)
+                                    
+                                    # Rotation controls
+                                    rot_col1, rot_col2, rot_col3 = st.columns(3)
+                                    with rot_col1:
+                                        if st.button("↶ 90°", key=f"rot_left_{img_key}"):
+                                            st.session_state.rotation_states[img_key] = (current_rotation - 90) % 360
+                                            st.rerun()
+                                    with rot_col2:
+                                        if st.button("↻ 90°", key=f"rot_right_{img_key}"):
+                                            st.session_state.rotation_states[img_key] = (current_rotation + 90) % 360
+                                            st.rerun()
+                                    with rot_col3:
+                                        if st.button("⟲ Reset", key=f"rot_reset_{img_key}"):
+                                            st.session_state.rotation_states[img_key] = 0
+                                            st.rerun()
+                            
                             col_idx += 1
                     else:
                         st.info("No files attached to this lecture.")
@@ -567,7 +643,7 @@ if st.session_state.logged_in:
         st.markdown("### ⚙️ Admin Dashboard")
         
         # Create sub-tabs for admin functions
-        admin_tab1, admin_tab2 = st.tabs(["📤 **Upload Lecture**", "🗑️ **Manage Lectures**"])
+        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["📤 **Upload Lecture**", "📚 **Batch Upload**", "🗑️ **Manage Lectures**"])
         
         # Upload Lecture Tab
         with admin_tab1:
@@ -666,8 +742,137 @@ if st.session_state.logged_in:
                         st.success("✅ Lecture uploaded successfully!")
                         st.balloons()
         
-        # Manage Lectures Tab
+        # Batch Upload Tab
         with admin_tab2:
+            st.markdown("#### 📚 Batch Upload Multiple Lectures")
+            st.info("📝 Upload multiple lectures at once. Each lecture will have the same subject and tags.")
+            
+            # Batch upload form
+            with st.form("batch_upload_form"):
+                # Common fields
+                st.markdown("##### Common Information")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    batch_subject = st.selectbox("📚 Subject*", ["Select Subject"] + SUBJECTS)
+                    batch_tags = st.text_input("🏷️ Common Tags", placeholder="Separate with commas...")
+                
+                with col2:
+                    batch_date = st.date_input("📅 Starting Date", datetime.now())
+                    batch_description_prefix = st.text_input("📝 Description Prefix", placeholder="e.g., 'Lecture on'")
+                
+                st.markdown("---")
+                
+                # Number of lectures to add
+                num_lectures = st.number_input("📊 Number of Lectures to Add", min_value=1, max_value=10, value=1)
+                
+                # Dynamic lecture fields
+                st.markdown("##### Individual Lecture Details")
+                
+                if "batch_lectures" not in st.session_state:
+                    st.session_state.batch_lectures = []
+                
+                # Create fields for each lecture
+                for i in range(num_lectures):
+                    with st.expander(f"📖 Lecture {i+1}", expanded=i==0):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            lec_title = st.text_input(f"Title*", key=f"batch_title_{i}", placeholder="Enter title...")
+                            lec_no = st.number_input(f"Lecture Number*", key=f"batch_no_{i}", min_value=1, value=i+1)
+                        
+                        with col2:
+                            lec_desc = st.text_area(f"Description", key=f"batch_desc_{i}", placeholder="Additional description...")
+                        
+                        st.markdown("**Files**")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            lec_pdfs = st.file_uploader(
+                                f"PDFs (Max 3)",
+                                type="pdf",
+                                accept_multiple_files=True,
+                                key=f"batch_pdf_{i}"
+                            )
+                        
+                        with col2:
+                            lec_imgs = st.file_uploader(
+                                f"Images (Max 30)",
+                                type=["jpg", "jpeg", "png"],
+                                accept_multiple_files=True,
+                                key=f"batch_img_{i}"
+                            )
+                
+                st.markdown("---")
+                
+                col1, col2, col3 = st.columns([2, 1, 2])
+                with col2:
+                    batch_submit = st.form_submit_button("🚀 Upload All Lectures", use_container_width=True)
+                
+                if batch_submit:
+                    if batch_subject == "Select Subject":
+                        st.error("❌ Please select a subject!")
+                    else:
+                        lectures = load_data()
+                        success_count = 0
+                        
+                        for i in range(num_lectures):
+                            title = st.session_state.get(f"batch_title_{i}", "")
+                            lec_no = st.session_state.get(f"batch_no_{i}", i+1)
+                            
+                            if title:  # Only process if title is provided
+                                # Process files
+                                files_data = []
+                                
+                                # PDFs
+                                pdfs = st.session_state.get(f"batch_pdf_{i}", [])
+                                if len(pdfs) <= 3:
+                                    for pdf in pdfs:
+                                        files_data.append({                                            "name": pdf.name,
+                                            "type": "pdf",
+                                            "content": file_to_base64(pdf)
+                                        })
+                                
+                                # Images
+                                imgs = st.session_state.get(f"batch_img_{i}", [])
+                                if len(imgs) <= 30:
+                                    for img in imgs:
+                                        files_data.append({
+                                            "name": img.name,
+                                            "type": "image",
+                                            "content": file_to_base64(img)
+                                        })
+                                
+                                # Create lecture
+                                desc = st.session_state.get(f"batch_desc_{i}", "")
+                                full_desc = f"{batch_description_prefix} {desc}".strip() if batch_description_prefix else desc
+                                
+                                new_lecture = {
+                                    "id": len(lectures) + success_count + 1,
+                                    "title": title,
+                                    "lecture_no": lec_no,
+                                    "subject": batch_subject,
+                                    "description": full_desc,
+                                    "tags": [tag.strip() for tag in batch_tags.split(",") if tag.strip()],
+                                    "date": datetime.combine(batch_date, datetime.min.time()),
+                                    "submitted_by": st.session_state.username,
+                                    "files": files_data,
+                                    "reads": 0,
+                                    "comments": []
+                                }
+                                
+                                lectures.append(new_lecture)
+                                success_count += 1
+                        
+                        if success_count > 0:
+                            save_data(lectures)
+                            st.success(f"✅ Successfully uploaded {success_count} lectures!")
+                            st.balloons()
+                        else:
+                            st.warning("⚠️ No lectures were uploaded. Please provide titles for the lectures.")
+        
+        # Manage Lectures Tab
+        with admin_tab3:
             st.markdown("#### 🗑️ Manage Existing Lectures")
             
             lectures = load_data()
@@ -698,17 +903,53 @@ if st.session_state.logged_in:
                             
                             with col2:
                                 if st.button("📝 Edit", key=f"edit_{lecture['id']}", use_container_width=True):
-                                    st.info("Edit functionality coming soon!")
+                                    st.session_state[f"edit_mode_{lecture['id']}"] = True
                             
                             with col3:
                                 if st.button("🗑️ Delete", key=f"delete_{lecture['id']}", type="secondary", use_container_width=True):
-                                    # Confirmation dialog
                                     if f"confirm_delete_{lecture['id']}" not in st.session_state:
                                         st.session_state[f"confirm_delete_{lecture['id']}"] = False
-                                    
                                     st.session_state[f"confirm_delete_{lecture['id']}"] = True
                             
-                            # Show confirmation dialog
+                            # Edit mode
+                            if st.session_state.get(f"edit_mode_{lecture['id']}", False):
+                                st.markdown("---")
+                                st.markdown("**📝 Edit Lecture**")
+                                
+                                with st.form(f"edit_form_{lecture['id']}"):
+                                    col1, col2 = st.columns(2)
+                                    
+                                    with col1:
+                                        new_title = st.text_input("Title", value=lecture['title'])
+                                        new_subject = st.selectbox("Subject", SUBJECTS, index=SUBJECTS.index(lecture['subject']))
+                                    
+                                    with col2:
+                                        new_lec_no = st.number_input("Lecture Number", value=lecture['lecture_no'], min_value=1)
+                                        new_tags = st.text_input("Tags", value=", ".join(lecture.get('tags', [])))
+                                    
+                                    new_desc = st.text_area("Description", value=lecture.get('description', ''))
+                                    
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        if st.form_submit_button("💾 Save Changes", use_container_width=True):
+                                            # Update lecture
+                                            lecture['title'] = new_title
+                                            lecture['subject'] = new_subject
+                                            lecture['lecture_no'] = new_lec_no
+                                            lecture['description'] = new_desc
+                                            lecture['tags'] = [tag.strip() for tag in new_tags.split(",") if tag.strip()]
+                                            
+                                            save_data(lectures)
+                                            st.success("✅ Lecture updated successfully!")
+                                            del st.session_state[f"edit_mode_{lecture['id']}"]
+                                            st.rerun()
+                                    
+                                    with col2:
+                                        if st.form_submit_button("❌ Cancel", use_container_width=True):
+                                            del st.session_state[f"edit_mode_{lecture['id']}"]
+                                            st.rerun()
+                            
+                            # Show confirmation dialog for delete
                             if st.session_state.get(f"confirm_delete_{lecture['id']}", False):
                                 st.warning(f"⚠️ Are you sure you want to delete '{lecture['title']}'?")
                                 col1, col2 = st.columns(2)
@@ -840,6 +1081,56 @@ if st.session_state.logged_in:
             )
             st.plotly_chart(fig, use_container_width=True)
             
+            # Additional analytics
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Comments by lecture
+                st.markdown("#### 💬 Most Discussed Lectures")
+                df['comment_count'] = df['comments'].apply(lambda x: len(x) if x else 0)
+                top_commented = df.nlargest(5, 'comment_count')[['title', 'comment_count']]
+                
+                if not top_commented.empty and top_commented['comment_count'].sum() > 0:
+                    fig = px.bar(
+                        top_commented,
+                        x='comment_count',
+                        y='title',
+                        orientation='h',
+                        color='comment_count',
+                        color_continuous_scale='Blues'
+                    )
+                    fig.update_layout(
+                        showlegend=False,
+                        height=250,
+                        margin=dict(l=0, r=0, t=0, b=0),
+                        xaxis_title="Number of Comments",
+                        yaxis_title=""
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No comments data available yet.")
+            
+            with col2:
+                # Contributor stats
+                st.markdown("#### 👥 Top Contributors")
+                contributor_counts = df['submitted_by'].value_counts().head(5)
+                
+                fig = px.bar(
+                    x=contributor_counts.values,
+                    y=contributor_counts.index,
+                    orientation='h',
+                    color=contributor_counts.values,
+                    color_continuous_scale='Greens'
+                )
+                fig.update_layout(
+                    showlegend=False,
+                    height=250,
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    xaxis_title="Number of Uploads",
+                    yaxis_title="Contributor"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
             # Recent activity table
             st.markdown("#### 🕒 Recent Activity")
             
@@ -860,6 +1151,65 @@ if st.session_state.logged_in:
                     "Views": st.column_config.NumberColumn("Views", width="small", format="%d 👀")
                 }
             )
+            
+            # Export data option
+            st.markdown("---")
+            st.markdown("#### 📥 Export Data")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                # Export as CSV
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="📊 Download as CSV",
+                    data=csv,
+                    file_name=f"lectures_data_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                # Export as JSON
+                json_str = df.to_json(orient='records', indent=2)
+                st.download_button(
+                    label="📋 Download as JSON",                    data=json_str,
+                    file_name=f"lectures_data_{datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+            
+            with col3:
+                # Generate report
+                if st.button("📄 Generate Report", use_container_width=True):
+                    report = f"""
+# MysticXib Classnote Corner - Analytics Report
+Generated on: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}
+
+## Overview
+- Total Lectures: {len(lectures)}
+- Total Views: {total_views}
+- Total Comments: {total_comments}
+- Average Views per Lecture: {avg_views}
+
+## Subject Distribution
+{subject_counts.to_string()}
+
+## Top 5 Most Viewed Lectures
+{top_lectures.to_string()}
+
+## Top Contributors
+{contributor_counts.to_string()}
+
+---
+Report generated by MysticXib Classnote Corner v2.0
+                    """
+                    st.download_button(
+                        label="💾 Download Report",
+                        data=report,
+                        file_name=f"analytics_report_{datetime.now().strftime('%Y%m%d')}.txt",
+                        mime="text/plain"
+                    )
         else:
             st.info("📊 No data available for analytics. Upload some lectures first!")
 
@@ -935,5 +1285,213 @@ if (!link) {
     document.getElementsByTagName('head')[0].appendChild(link);
 }
 link.href = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">📚</text></svg>';
+</script>
+""", unsafe_allow_html=True)
+
+# Add keyboard shortcuts
+st.markdown("""<script>
+document.addEventListener('keydown', function(event) {
+    // Ctrl/Cmd + K for search focus
+    if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
+        event.preventDefault();
+        document.querySelector('input[type="text"]').focus();
+    }
+    
+    // Ctrl/Cmd + U for upload (if logged in)
+    if ((event.ctrlKey || event.metaKey) && event.key === 'u') {
+        event.preventDefault();
+        const uploadTab = document.querySelector('[data-baseweb="tab"]:nth-child(2)');
+        if (uploadTab) uploadTab.click();
+    }
+    
+    // Escape to close modals
+    if (event.key === 'Escape') {
+        const closeButtons = document.querySelectorAll('[aria-label="Close"]');
+        closeButtons.forEach(button => button.click());
+    }
+});
+</script>
+""", unsafe_allow_html=True)
+
+# Auto-save functionality for forms
+if st.session_state.logged_in:
+    # Auto-save draft every 30 seconds
+    st.markdown("""
+    <script>
+    // Auto-save form data
+    let autoSaveInterval;
+    
+    function autoSaveForm() {
+        const formData = {};
+        const inputs = document.querySelectorAll('input, textarea, select');
+        
+        inputs.forEach(input => {
+            if (input.id) {
+                formData[input.id] = input.value;
+            }
+        });
+        
+        localStorage.setItem('formDraft', JSON.stringify(formData));
+        console.log('Form data auto-saved');
+    }
+    
+    // Start auto-save
+    autoSaveInterval = setInterval(autoSaveForm, 30000);
+    
+    // Restore saved data on page load
+    window.addEventListener('load', function() {
+        const savedData = localStorage.getItem('formDraft');
+        if (savedData) {
+            const formData = JSON.parse(savedData);
+            Object.keys(formData).forEach(key => {
+                const input = document.getElementById(key);
+                if (input) {
+                    input.value = formData[key];
+                }
+            });
+        }
+    });
+    
+    // Clear saved data when form is submitted
+    document.addEventListener('submit', function() {
+        localStorage.removeItem('formDraft');
+        clearInterval(autoSaveInterval);
+    });
+    </script>
+    """, unsafe_allow_html=True)
+
+# Performance monitoring
+st.markdown("""
+<script>
+// Log performance metrics
+window.addEventListener('load', function() {
+    const perfData = window.performance.timing;
+    const pageLoadTime = perfData.loadEventEnd - perfData.navigationStart;
+    console.log(`Page load time: ${pageLoadTime}ms`);
+    
+    // Send analytics if needed
+    if (window.gtag) {
+        gtag('event', 'page_load_time', {
+            'value': pageLoadTime,
+            'page_location': window.location.href
+        });
+    }
+});
+</script>
+""", unsafe_allow_html=True)
+
+# Add print styles
+st.markdown("""
+<style>
+@media print {
+    .stButton, .stFileUploader, .stTextInput, .stSelectbox {
+        display: none !important;
+    }
+    
+    .custom-card {
+        page-break-inside: avoid;
+        border: 1px solid #ddd;
+        margin-bottom: 1rem;
+    }
+    
+    .main-header {
+        background: none !important;
+        color: black !important;
+        border: 2px solid #333;
+    }
+    
+    body {
+        font-size: 12pt;
+        line-height: 1.5;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Accessibility features
+st.markdown("""
+<script>
+// Add ARIA labels dynamically
+document.addEventListener('DOMContentLoaded', function() {
+    // Add labels to buttons
+    const buttons = document.querySelectorAll('button');
+    buttons.forEach(button => {
+        if (!button.getAttribute('aria-label')) {
+            button.setAttribute('aria-label', button.innerText);
+        }
+    });
+    
+    // Add labels to inputs
+    const inputs = document.querySelectorAll('input, textarea, select');
+    inputs.forEach(input => {
+        const label = input.closest('div').querySelector('label');
+        if (label && !input.getAttribute('aria-label')) {
+            input.setAttribute('aria-label', label.innerText);
+        }
+    });
+});
+
+// Enable keyboard navigation for custom elements
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Tab') {
+        // Custom tab handling if needed
+    }
+});
+</script>
+""", unsafe_allow_html=True)
+
+# Session timeout warning
+if st.session_state.logged_in:
+    st.markdown("""
+    <script>
+    let warningTimer;
+    let logoutTimer;
+    
+    function resetTimers() {
+        clearTimeout(warningTimer);
+        clearTimeout(logoutTimer);
+        
+        // Warn after 25 minutes of inactivity
+        warningTimer = setTimeout(function() {
+            if (confirm('Your session will expire in 5 minutes due to inactivity. Click OK to continue.')) {
+                resetTimers();
+            }
+        }, 25 * 60 * 1000);
+        
+        // Auto logout after 30 minutes
+        logoutTimer = setTimeout(function() {
+            alert('Session expired due to inactivity.');
+            window.location.reload();
+        }, 30 * 60 * 1000);
+    }
+    
+    // Reset timers on user activity
+    ['mousedown', 'keypress', 'scroll', 'touchstart'].forEach(event => {
+        document.addEventListener(event, resetTimers, true);
+    });
+    
+    // Initialize timers
+    resetTimers();
+    </script>
+    """, unsafe_allow_html=True)
+
+# Final cleanup and optimization
+st.markdown("""
+<script>
+// Clean up on page unload
+window.addEventListener('beforeunload', function() {
+    // Save any unsaved data
+    if (typeof autoSaveForm === 'function') {
+        autoSaveForm();
+    }
+});
+
+// Optimize images loading
+document.addEventListener('DOMContentLoaded', function() {
+    const images = document.querySelectorAll('img');
+    images.forEach(img => {
+        img.loading = 'lazy';
+    });
+});
 </script>
 """, unsafe_allow_html=True)
